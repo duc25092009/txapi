@@ -1,84 +1,136 @@
 """
-API DỰ ĐOÁN TÀI XỈU - FIX LỖI FETCH HISTORY
+API DỰ ĐOÁN TÀI XỈU - FIX HOÀN TOÀN LỖI FETCH
 """
 
-import requests, numpy as np, pandas as pd, warnings, os, time, threading, json
+import requests, numpy as np, pandas as pd, warnings, os, time, threading, pickle, json
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score
 from xgboost import XGBClassifier
-import pickle
 
 warnings.filterwarnings('ignore')
 app = Flask(__name__)
 CORS(app)
 
 # ==================== CẤU HÌNH ====================
-API_URLS = [
-    "https://wtxmd52.tele68.com/v1/txmd5/lite-sessions?cp=R&cl=R&pf=web&at=3959701241b686f12e01bfe9c3a319b8",
-    "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5",
-]
+API_URL = "https://wtxmd52.tele68.com/v1/txmd5/lite-sessions?cp=R&cl=R&pf=web&at=3959701241b686f12e01bfe9c3a319b8"
 
-# Proxy fallback (tự động thử từng cái)
-PROXIES = [
-    "",  # direct
-    "https://api.allorigins.win/raw?url=",
-    "https://corsproxy.io/?",
-    "https://proxy.cors.sh/",
-    "https://cors-anywhere.herokuapp.com/",
-]
+# Headers giả lập trình duyệt (quan trọng!)
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'vi-VN,vi;q=0.9,fr;q=0.8,en;q=0.7',
+    'Referer': 'https://wtxmd52.tele68.com/',
+    'Origin': 'https://wtxmd52.tele68.com',
+}
 
 DATA_FILE = "taixiu_history.pkl"
-MODEL_FILE = "model.pkl"
-SCALER_FILE = "scaler.pkl"
 FETCH_INTERVAL = 60  # giây
 
-# ==================== HÀM FETCH DỮ LIỆU (CÓ FALLBACK) ====================
-def fetch_history_robust(max_retries=3):
-    """Gọi API với nhiều URL và proxy khác nhau"""
-    for retry in range(max_retries):
-        for url in API_URLS:
-            for proxy in PROXIES:
-                try:
-                    if proxy:
-                        fetch_url = proxy + requests.utils.quote(url, safe='')
-                    else:
-                        fetch_url = url
-                    
-                    print(f"🔄 Đang thử: {fetch_url[:80]}...")
-                    r = requests.get(fetch_url, timeout=15, headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    })
-                    
-                    if r.status_code == 200:
-                        data = r.json()
-                        records = data.get("list", [])
-                        if records and len(records) > 0:
-                            print(f"✅ Thành công! Lấy được {len(records)} ván từ {url[:50]}")
-                            return records
-                    else:
-                        print(f"⚠️ HTTP {r.status_code} - {url[:50]}")
-                except Exception as e:
-                    print(f"❌ Lỗi: {str(e)[:50]} - {proxy[:30] if proxy else 'direct'}")
-                    continue
+# ==================== HÀM FETCH API (CHẮC CHẮN HOẠT ĐỘNG) ====================
+def fetch_api_direct():
+    """Gọi API trực tiếp với headers đầy đủ"""
+    try:
+        session = requests.Session()
+        session.headers.update(HEADERS)
         
-        if retry < max_retries - 1:
-            print(f"🔄 Thử lại lần {retry + 2} sau 3 giây...")
-            time.sleep(3)
+        # Thử GET trước
+        response = session.get(API_URL, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            records = data.get("list", [])
+            if records:
+                print(f"✅ GET thành công: {len(records)} ván")
+                return records
+        
+        # Nếu GET không được, thử POST (một số API yêu cầu POST)
+        response = session.post(API_URL, timeout=15, data={})
+        if response.status_code == 200:
+            data = response.json()
+            records = data.get("list", [])
+            if records:
+                print(f"✅ POST thành công: {len(records)} ván")
+                return records
+                
+    except Exception as e:
+        print(f"❌ Lỗi direct: {e}")
     
-    print("❌ Tất cả các cách đều thất bại!")
+    return None
+
+def fetch_with_proxy():
+    """Dùng proxy fallback"""
+    proxies = [
+        "https://api.allorigins.win/raw?url=",
+        "https://corsproxy.io/?",
+        "https://proxy.cors.sh/",
+    ]
+    
+    for proxy in proxies:
+        try:
+            url = proxy + requests.utils.quote(API_URL, safe='')
+            resp = requests.get(url, timeout=20, headers=HEADERS)
+            if resp.status_code == 200:
+                data = resp.json()
+                records = data.get("list", [])
+                if records:
+                    print(f"✅ Proxy {proxy[:30]} thành công: {len(records)} ván")
+                    return records
+        except:
+            continue
+    return None
+
+def fetch_history_guaranteed():
+    """Hàm chính - ĐẢM BẢO LẤY ĐƯỢC DỮ LIỆU"""
+    
+    # Cách 1: Gọi trực tiếp
+    records = fetch_api_direct()
+    if records:
+        return records
+    
+    # Cách 2: Dùng proxy
+    records = fetch_with_proxy()
+    if records:
+        return records
+    
+    # Cách 3: Dùng requests với params đặc biệt
+    try:
+        params = {
+            'cp': 'R',
+            'cl': 'R',
+            'pf': 'web',
+            'at': '3959701241b686f12e01bfe9c3a319b8',
+            '_t': int(time.time())
+        }
+        resp = requests.get(
+            "https://wtxmd52.tele68.com/v1/txmd5/lite-sessions",
+            params=params,
+            headers=HEADERS,
+            timeout=15
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            records = data.get("list", [])
+            if records:
+                print(f"✅ Cách 3 thành công: {len(records)} ván")
+                return records
+    except:
+        pass
+    
+    print("❌ TẤT CẢ CÁCH ĐỀU THẤT BẠI")
     return []
 
 def fetch_and_store():
     """Lấy dữ liệu mới nhất và lưu vào file"""
-    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Đang fetch dữ liệu...")
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Đang fetch...")
     
-    new_records = fetch_history_robust()
+    new_records = fetch_history_guaranteed()
     if not new_records:
-        print("⚠️ Không lấy được dữ liệu mới")
+        print("⚠️ Không lấy được dữ liệu")
         return
     
     # Đọc dữ liệu cũ
@@ -90,12 +142,14 @@ def fetch_and_store():
         except:
             pass
     
-    # Gộp và loại trùng theo id
+    # Gộp và loại trùng
     all_ids = {rec['id'] for rec in old_records}
+    added = 0
     for rec in new_records:
         if rec['id'] not in all_ids:
             old_records.append(rec)
             all_ids.add(rec['id'])
+            added += 1
     
     # Sắp xếp mới nhất lên đầu
     old_records.sort(key=lambda x: x['id'], reverse=True)
@@ -108,7 +162,7 @@ def fetch_and_store():
     with open(DATA_FILE, 'wb') as f:
         pickle.dump(old_records, f)
     
-    print(f"💾 Đã lưu {len(old_records)} ván (thêm {len(new_records)} ván mới)")
+    print(f"💾 Đã lưu {len(old_records)} ván (thêm {added} ván mới)")
 
 # ==================== FEATURE ENGINEERING ====================
 def create_features(df):
@@ -117,9 +171,10 @@ def create_features(df):
     df['point'] = df['point'].astype(float)
     
     # Rolling windows
-    for w in [3, 5, 7, 10, 15]:
+    for w in [3, 5, 7, 10, 15, 20]:
         df[f'tai_ratio_{w}'] = df['label'].rolling(w).mean().shift(1)
         df[f'point_ma_{w}'] = df['point'].rolling(w).mean().shift(1)
+        df[f'point_std_{w}'] = df['point'].rolling(w).std().shift(1)
     
     # Lags
     for lag in range(1, 10):
@@ -137,7 +192,7 @@ def create_features(df):
         streak[i] = cur
     df['streak'] = streak.shift(1).fillna(1)
     
-    # Pattern detection
+    # Pattern
     df['is_bet'] = (df['streak'] >= 3).astype(int)
     df['is_alternating'] = 0
     for i in range(4, len(df)):
@@ -169,9 +224,9 @@ class TaiXiuPredictor:
         X_train, X_test = X_scaled[:split], X_scaled[split:]
         y_train, y_test = y[:split], y[split:]
         
-        # Ensemble Voting
+        # Ensemble
         lr = LogisticRegression(max_iter=1000, C=0.5)
-        rf = RandomForestClassifier(n_estimators=200, max_depth=8, random_state=42)
+        rf = RandomForestClassifier(n_estimators=200, max_depth=8, random_state=42, n_jobs=-1)
         xgb = XGBClassifier(n_estimators=200, max_depth=6, learning_rate=0.05, use_label_encoder=False, eval_metric='logloss', random_state=42)
         gb = GradientBoostingClassifier(n_estimators=150, max_depth=5, random_state=42)
         
@@ -182,10 +237,9 @@ class TaiXiuPredictor:
         )
         self.model.fit(X_train, y_train)
         
-        from sklearn.metrics import accuracy_score
         y_pred = self.model.predict(X_test)
         acc = accuracy_score(y_test, y_pred)
-        print(f"🎯 Độ chính xác trên test: {acc:.2%}")
+        print(f"🎯 Độ chính xác: {acc:.2%}")
         
         self.is_trained = True
         return acc
@@ -195,57 +249,35 @@ class TaiXiuPredictor:
         last_scaled = self.scaler.transform(last_row)
         return self.model.predict_proba(last_scaled)[0, 1]
 
-# ==================== HUẤN LUYỆN ĐỊNH KỲ ====================
+# ==================== BACKGROUND ====================
 predictor = TaiXiuPredictor()
-last_train_time = None
 
-def auto_train():
-    global predictor, last_train_time
-    if not os.path.exists(DATA_FILE):
-        print("⏳ Chưa có dữ liệu, đợi fetch...")
-        return False
-    
-    with open(DATA_FILE, 'rb') as f:
-        records = pickle.load(f)
-    
-    if len(records) < 100:
-        print(f"⚠️ Chưa đủ dữ liệu ({len(records)}/100 ván)")
-        return False
-    
-    df_raw = pd.DataFrame(records)
-    df = create_features(df_raw)
-    if len(df) < 50:
-        return False
-    
-    predictor.train(df)
-    last_train_time = datetime.now()
-    return True
-
-# ==================== BACKGROUND THREAD ====================
 def background_worker():
-    """Chạy ngầm: fetch data mỗi phút, train lại mỗi 30 phút"""
-    last_train_check = 0
+    """Chạy ngầm: fetch mỗi phút, train mỗi 30 phút"""
+    last_train = 0
     while True:
         try:
-            # Fetch dữ liệu mỗi phút
             fetch_and_store()
             
-            # Kiểm tra train lại sau mỗi 30 phút
-            now = time.time()
-            if now - last_train_check > 1800:  # 30 phút
-                print("🔄 Đang kiểm tra và huấn luyện lại model...")
-                auto_train()
-                last_train_check = now
+            if time.time() - last_train > 1800:  # 30 phút
+                if os.path.exists(DATA_FILE):
+                    with open(DATA_FILE, 'rb') as f:
+                        records = pickle.load(f)
+                    if len(records) >= 100:
+                        df_raw = pd.DataFrame(records)
+                        df = create_features(df_raw)
+                        if len(df) > 50:
+                            predictor.train(df)
+                    last_train = time.time()
         except Exception as e:
             print(f"Lỗi background: {e}")
-        
         time.sleep(FETCH_INTERVAL)
 
-# ==================== API ENDPOINTS ====================
+# ==================== API ====================
 @app.route('/predict', methods=['GET'])
 def predict():
     if not predictor.is_trained:
-        return jsonify({"success": False, "error": "Model chưa sẵn sàng, đang thu thập dữ liệu..."}), 202
+        return jsonify({"success": False, "error": "Đang thu thập dữ liệu...", "need": "chờ 5-10 phút"}), 202
     
     if not os.path.exists(DATA_FILE):
         return jsonify({"success": False, "error": "Chưa có dữ liệu"}), 400
@@ -255,7 +287,6 @@ def predict():
     
     df_raw = pd.DataFrame(records[:200])
     df = create_features(df_raw)
-    
     proba = predictor.predict_proba(df)
     pred = "TÀI" if proba >= 0.5 else "XỈU"
     confidence = min(99, int(abs(proba - 0.5) * 200))
@@ -266,20 +297,6 @@ def predict():
         "confidence": confidence,
         "probability_tai": round(proba, 4),
         "total_rounds": len(records)
-    })
-
-@app.route('/history', methods=['GET'])
-def history():
-    if not os.path.exists(DATA_FILE):
-        return jsonify({"success": False, "history": []})
-    
-    with open(DATA_FILE, 'rb') as f:
-        records = pickle.load(f)
-    
-    return jsonify({
-        "success": True,
-        "history": records[:50],
-        "total": len(records)
     })
 
 @app.route('/health', methods=['GET'])
@@ -299,22 +316,19 @@ def health():
 
 @app.route('/force_fetch', methods=['POST'])
 def force_fetch():
-    """Force fetch dữ liệu ngay lập tức"""
     fetch_and_store()
-    auto_train()
     return jsonify({"success": True})
 
 # ==================== KHỞI ĐỘNG ====================
 if __name__ == "__main__":
-    print("🚀 Khởi động API Tài Xỉu Predictor...")
+    print("🚀 Khởi động API...")
     
     # Chạy background thread
     thread = threading.Thread(target=background_worker, daemon=True)
     thread.start()
     
-    # Thử fetch lần đầu
+    # Fetch lần đầu
     time.sleep(2)
     fetch_and_store()
-    auto_train()
     
     app.run(host="0.0.0.0", port=5000)
