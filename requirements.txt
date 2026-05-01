@@ -3,7 +3,7 @@ numpy
 pandas
 scikit-learn
 xgboost
-tensorflow
+tensorflow-cpu
 flask
 flask-cors
 gunicorn
